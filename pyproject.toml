@@ -41,6 +41,8 @@ dependencies = [
     "torchaudio",
     "perth>=0.2.0",
     "llama-cpp-python==0.3.16",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
 ]
 
 [tool.uv.sources]

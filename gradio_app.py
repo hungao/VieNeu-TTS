@@ -966,4 +966,49 @@ if __name__ == "__main__":
     if server_name == "0.0.0.0" and os.getenv("GRADIO_SHARE") is None:
         share = False
 
-    demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
+    # Mount FastAPI app (always enabled)
+    try:
+        from api_server import app as fastapi_app, tts_instance as api_tts_instance, current_config as api_config
+
+        # Share TTS instance between Gradio and FastAPI
+        # This allows both interfaces to use the same loaded model
+        def sync_model_to_api():
+            """Sync Gradio's TTS instance to FastAPI"""
+            import api_server
+            if model_loaded and tts is not None:
+                api_server.tts_instance = tts
+                api_server.current_config = {
+                    "backbone": current_backbone,
+                    "codec": current_codec,
+                    "device": "cuda" if using_lmdeploy else "auto",
+                    "use_lmdeploy": using_lmdeploy
+                }
+
+        # Sync model after loading
+        def wrap_load_model(*args, **kwargs):
+            result = yield from load_model(*args, **kwargs)
+            sync_model_to_api()
+            return result
+
+        # Override load_model to sync with API
+        original_load_model = load_model
+        load_model = wrap_load_model
+
+        # Mount FastAPI at /api
+        app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+        print("✅ FastAPI mounted at /api endpoints")
+        print("   - Health check: http://{}:{}/api/health".format(server_name if server_name != "0.0.0.0" else "localhost", server_port))
+        print("   - API docs: http://{}:{}/docs".format(server_name if server_name != "0.0.0.0" else "localhost", server_port))
+
+        # Launch with uvicorn when FastAPI is mounted
+        import uvicorn
+        uvicorn.run(app, host=server_name, port=server_port)
+    except ImportError as e:
+        print(f"⚠️ Could not mount FastAPI: {e}")
+        print("   Install with: uv pip install fastapi uvicorn")
+        # Fall back to Gradio-only launch
+        demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
+    except Exception as e:
+        print(f"⚠️ Error mounting FastAPI: {e}")
+        # Fall back to Gradio-only launch
+        demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
