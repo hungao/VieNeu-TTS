@@ -3,8 +3,9 @@ FastAPI server for VieNeu-TTS
 Provides REST API endpoints for text-to-speech synthesis.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, status
 from fastapi.responses import Response
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 import base64
 import soundfile as sf
@@ -18,6 +19,15 @@ from vieneu_tts import VieNeuTTS, FastVieNeuTTS
 import torch
 from utils.core_utils import split_text_into_chunks
 from functools import lru_cache
+
+# Load environment variables from .env and .env.local
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Load .env
+    load_dotenv('.env.local', override=True)  # Load .env.local (overrides .env)
+except ImportError:
+    print("⚠️  python-dotenv not installed. Environment variables must be set manually.")
+    print("   Install with: pip install python-dotenv")
 
 # Load configuration
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -41,6 +51,31 @@ current_config = {
     "device": None,
     "use_lmdeploy": False
 }
+
+# API Key authentication (required)
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
+
+# Load API key from environment (required)
+VIENEU_API_KEY = os.getenv("VIENEU_API_KEY")
+if VIENEU_API_KEY is None:
+    print("⚠️  WARNING: VIENEU_API_KEY not set. API authentication is REQUIRED.")
+    print("   Set environment variable: export VIENEU_API_KEY='your-secret-key'")
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    """Verify API key - authentication is required"""
+    if VIENEU_API_KEY is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Server configuration error: VIENEU_API_KEY not set"
+        )
+
+    if api_key != VIENEU_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+    return api_key
 
 # Cache for reference texts
 @lru_cache(maxsize=32)
@@ -200,7 +235,7 @@ async def list_voices():
         "count": len(voices)
     }
 
-@app.post("/api/load-model")
+@app.post("/api/load-model", dependencies=[Security(verify_api_key)])
 async def load_model(config: ModelConfigRequest):
     """Load TTS model with specified configuration"""
     global tts_instance, current_config
@@ -307,7 +342,7 @@ async def load_model(config: ModelConfigRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
-@app.post("/api/synthesize")
+@app.post("/api/synthesize", dependencies=[Security(verify_api_key)])
 async def synthesize(request: SynthesizeRequest):
     """
     Synthesize speech from text using specified voice.
@@ -397,7 +432,7 @@ async def synthesize(request: SynthesizeRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {str(e)}")
 
-@app.post("/api/batch-synthesize", response_model=BatchSynthesizeResponse)
+@app.post("/api/batch-synthesize", response_model=BatchSynthesizeResponse, dependencies=[Security(verify_api_key)])
 async def batch_synthesize(request: BatchSynthesizeRequest):
     """
     Synthesize multiple texts in batch.
